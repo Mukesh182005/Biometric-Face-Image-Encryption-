@@ -1,9 +1,31 @@
-"""Central configuration. Every value can be overridden with an environment variable."""
+"""Central configuration. Every value can be set in the project's .env file or as an environment variable."""
 import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
+ENV_FILE = PROJECT_DIR / ".env"
+
+
+def load_env_file(path: Path) -> None:
+    """Load KEY=VALUE lines from a .env file. Real environment variables always win over the file."""
+    if not path.is_file():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key, value = key.strip().removeprefix("export ").strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        elif " #" in value:
+            value = value.split(" #", 1)[0].rstrip()  # inline comment on an unquoted value
+        if key and value:
+            os.environ.setdefault(key, value)
+
+
+load_env_file(ENV_FILE)
 # Production build of the TypeScript + Tailwind frontend (created by `npm run build` in frontend/).
 FRONTEND_DIR = PROJECT_DIR / "frontend" / "dist"
 
@@ -21,7 +43,8 @@ MASTER_PASSPHRASE = os.environ.get("BFE_MASTER_PASSPHRASE", DEV_PASSPHRASE)
 # creating further accounts is disabled.
 SUPER_ADMIN = os.environ.get("BFE_SUPER_ADMIN", "mukeshrao1704@gmail.com").strip().lower()
 
-# Initial super-admin password (random one is generated and printed if not set).
+# Super-admin password. When set (e.g. in .env) it is the source of truth: the stored scrypt hash is
+# updated on start-up if it differs. When unset, a random one is generated on first run and printed.
 ADMIN_PASSWORD = os.environ.get("BFE_ADMIN_PASSWORD")
 
 # Face matching: Euclidean distance between 128-d descriptors.

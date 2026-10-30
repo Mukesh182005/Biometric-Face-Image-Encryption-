@@ -198,6 +198,12 @@ class KeyManager:
     def jwt_secret(self) -> bytes:
         return b64d(self._ring["jwt_secret"])
 
+    def change_passphrase(self, new_passphrase: str) -> None:
+        """Re-encrypt the keyring file under a new passphrase (fresh salt and nonce). Keys are unchanged."""
+        with self._lock:
+            self._passphrase = new_passphrase.encode("utf-8")
+            self._save()
+
     def rotate(self) -> int:
         """Create a new KEK version and make it active. Old versions stay for unwrapping."""
         with self._lock:

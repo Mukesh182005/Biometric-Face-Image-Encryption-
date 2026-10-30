@@ -225,19 +225,31 @@ python app.py --https     # self-signed cert → https://localhost:5443
 
 ## `// configuration`
 
-All settings are environment variables. **Set the passphrase before storing real faces.**
+All credentials and settings live in a **`.env`** file in the project root, which is read
+automatically at start-up and is **git-ignored**. Start from the template:
+
+```bash
+cp .env.example .env      # Windows: copy .env.example .env
+```
+
+Then fill in your own values. Real environment variables, if set, take priority over `.env`.
+**Set a strong passphrase before storing real faces.**
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `BFE_MASTER_PASSPHRASE` | dev passphrase ⚠️ | Unlocks the encrypted keyring |
 | `BFE_SUPER_ADMIN` | see `config.py` | The only account that can sign in |
-| `BFE_ADMIN_PASSWORD` | random, printed once | Initial super-admin password |
+| `BFE_ADMIN_PASSWORD` | random, printed once | Super-admin password; applied on every start-up, so edit `.env` and restart to change it |
 | `BFE_MATCH_THRESHOLD` | `0.5` | Max face distance for a match (lower = stricter) |
 | `BFE_JWT_TTL_MINUTES` | `30` | Session lifetime |
 | `BFE_DATA_DIR` | `backend/instance` | Where the database and keyring live |
 
-> Changing `BFE_MASTER_PASSPHRASE` after the first run locks you out of the existing keyring.
-> Delete `backend/instance/` to start fresh.
+> **Changing the passphrase later?** Run `python change_passphrase.py` in `backend/` first. It
+> re-encrypts the keyring under the new passphrase (keeping a backup), then you update `.env`.
+> Changing `.env` alone would lock you out of the existing keyring.
+>
+> **Run only one server at a time.** Each server keeps its own copy of the keys in memory, so a second
+> copy would miss key rotations done by the first. FaceVault refuses to start if port 5000 is busy.
 
 ---
 
@@ -292,6 +304,7 @@ All settings are environment variables. **Set the passphrase before storing real
 ```
 biometric-face-encryption/
 ├── start.bat                    one-command install + build + run (Windows)
+├── .env.example                 credentials template (copy to .env, which is git-ignored)
 ├── backend/                     Python · Flask · cryptography
 │   ├── app.py                   REST API, routes, TLS bootstrap
 │   ├── crypto_engine.py         keyring, envelope + transport encryption, blind index, audit MAC
@@ -299,6 +312,7 @@ biometric-face-encryption/
 │   ├── security.py              JWT, super-admin guard, rate limiting, security headers
 │   ├── config.py                settings (all overridable by environment variables)
 │   ├── reset_admin.py           reset the super-admin password
+│   ├── change_passphrase.py     re-encrypt the keyring under a new passphrase
 │   └── tests/test_security.py   24 security tests
 └── frontend/                    TypeScript · Tailwind CSS 4 · Vite
     ├── index.html               page structure

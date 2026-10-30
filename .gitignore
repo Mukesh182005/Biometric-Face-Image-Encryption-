@@ -4,3 +4,8 @@ __pycache__/
 node_modules/
 frontend/dist/
 frontend/public/models/
+
+# local secrets (see .env.example)
+.env
+.env.*
+!.env.example

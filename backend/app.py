@@ -10,6 +10,7 @@ import argparse
 import itertools
 import re
 import secrets
+import sys
 import time
 import uuid
 from dataclasses import dataclass
@@ -82,6 +83,13 @@ def create_app(data_dir: Path | None = None, passphrase: str | None = None,
                                  "Delete this file after you have signed in and noted the password.\n")
             print("\n" + "=" * 64 + f"\n  Super-admin account created\n  username: {config.SUPER_ADMIN}\n"
                   f"  password: {pw}\n  (also saved to {cred_file})\n" + "=" * 64 + "\n", flush=True)
+    else:
+        # A password configured in .env / the environment is authoritative: keep the stored hash in sync.
+        configured = admin_password or config.ADMIN_PASSWORD
+        stored = db.get_operator(config.SUPER_ADMIN)["password_hash"]
+        if configured and not check_password_hash(stored, configured):
+            db.set_operator_password(config.SUPER_ADMIN, generate_password_hash(configured, method="scrypt"))
+            db.audit("system", "sync_admin_password", "ok", target=config.SUPER_ADMIN, details="from .env")
 
     app.after_request(apply_security_headers)
 
@@ -492,9 +500,18 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int)
     parser.add_argument("--no-browser", action="store_true", help="do not open a browser tab")
     args = parser.parse_args()
+    port = args.port or (5443 if args.https else 5000)
+    # Two servers sharing one keyring is unsafe: each keeps its own copy of the keys in memory, so a key
+    # rotation done by one leaves the other unable to decrypt (records then show as TAMPERED). Windows
+    # lets two processes listen on the same port, so refuse to start if something already answers there.
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.5)
+        if probe.connect_ex((args.host, port)) == 0:
+            sys.exit(f"\n  Port {port} is already in use: FaceVault (or another program) is already running.\n"
+                     f"  Use the existing one at http://localhost:{port}, or close it first.\n")
     application = create_app()
     ssl_ctx = ensure_self_signed_cert(config.CERT_DIR) if args.https else None
-    port = args.port or (5443 if args.https else 5000)
     url = f"{'https' if args.https else 'http'}://localhost:{port}"
     print(f"\n  FaceVault is running ->  {url}\n  Press CTRL+C to stop.\n", flush=True)
     if not args.no_browser:

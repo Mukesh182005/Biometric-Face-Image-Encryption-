@@ -92,6 +92,12 @@ class Database:
             c.execute("INSERT INTO operators (username, password_hash, role, created_at) "
                       "VALUES (?, ?, ?, ?)", (username, password_hash, role, utcnow_iso()))
 
+    def set_operator_password(self, username: str, password_hash: str) -> None:
+        """Replace the password hash and clear any lockout."""
+        with self.connect() as c:
+            c.execute("UPDATE operators SET password_hash = ?, failed_attempts = 0, locked_until = NULL "
+                      "WHERE username = ?", (password_hash, username))
+
     def record_login_failure(self, username: str, max_attempts: int, lock_seconds: int, now: float):
         with self.connect() as c:
             c.execute("UPDATE operators SET failed_attempts = failed_attempts + 1 WHERE username = ?",
