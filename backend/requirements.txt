@@ -1,3 +1,5 @@
 flask>=3.0
 cryptography>=42.0
 PyJWT>=2.8
+# production server (Linux hosts such as Render); not needed for start.bat on Windows
+gunicorn>=22.0; platform_system != "Windows"

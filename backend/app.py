@@ -18,6 +18,7 @@ from pathlib import Path
 
 from flask import Flask, g, jsonify, request, send_from_directory
 from werkzeug.exceptions import HTTPException
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import config
@@ -59,6 +60,11 @@ def create_app(data_dir: Path | None = None, passphrase: str | None = None,
     app = Flask(__name__, static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = config.MAX_CONTENT_LENGTH
     app.config["SUPER_ADMIN"] = config.SUPER_ADMIN
+    if config.TRUSTED_PROXIES:
+        # Behind Vercel/Render: take the client IP (rate limiting, audit log) and the https scheme from the
+        # X-Forwarded-* headers that the trusted proxies append. Only enable this behind real proxies,
+        # otherwise a client could spoof its IP with a fake X-Forwarded-For header.
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=config.TRUSTED_PROXIES, x_proto=1)
 
     keys = KeyManager(data_dir / "keyring.enc", passphrase or config.MASTER_PASSPHRASE)
     db = Database(data_dir / "biometric.db", keys.audit_key)
@@ -144,8 +150,9 @@ def create_app(data_dir: Path | None = None, passphrase: str | None = None,
     @app.get("/")
     def index():
         if not (config.FRONTEND_DIR / "index.html").exists():
-            return ("<h1>Frontend not built</h1><p>Run <code>npm install</code> and <code>npm run build</code> "
-                    "in the <code>frontend</code> folder, or start the project with <code>start.bat</code>.</p>", 503)
+            # API-only deployment (frontend hosted on Vercel) or a local checkout that was never built.
+            return jsonify(service="FaceVault API", status="ok", frontend="not served here",
+                           hint="Locally: run start.bat, or `npm run build` in frontend/.")
         return send_from_directory(config.FRONTEND_DIR, "index.html")
 
     @app.get("/<path:filename>")

@@ -23,7 +23,7 @@
 ![RSA-OAEP-3072](https://img.shields.io/badge/RSA--OAEP-3072-191919?style=flat-square&labelColor=23f871)
 ![HMAC-SHA256](https://img.shields.io/badge/HMAC--SHA256-audit_chain-191919?style=flat-square&labelColor=23f871)
 ![scrypt](https://img.shields.io/badge/scrypt-keyring-191919?style=flat-square&labelColor=23f871)
-![tests](https://img.shields.io/badge/security_tests-24_passing-191919?style=flat-square&labelColor=23f871)
+![tests](https://img.shields.io/badge/security_tests-27_passing-191919?style=flat-square&labelColor=23f871)
 
 *A Cryptography & Network Security project*
 
@@ -223,6 +223,44 @@ python app.py --https     # self-signed cert → https://localhost:5443
 
 ---
 
+## `// deploy (Vercel + Render)`
+
+```
+ Browser ──HTTPS──▶  Vercel   (frontend/dist, static)
+                        │  /api/*  forwarded by frontend/vercel.json (same origin: no CORS)
+                        ▼
+                     Render   (Flask + gunicorn, exactly 1 instance)
+                        └── persistent disk /var/data: biometric.db + keyring.enc
+```
+
+The backend can't run on Vercel: it needs a **persistent disk** (database and keyring) and **one
+long-lived process** (the transport key, replay cache and rate limits live in memory).
+
+**1 · Backend on Render**
+1. Render dashboard → **New → Blueprint** → pick this repo. It reads [`render.yaml`](render.yaml).
+2. Enter `BFE_SUPER_ADMIN` and a strong `BFE_ADMIN_PASSWORD` when asked. `BFE_MASTER_PASSPHRASE`
+   is generated for you.
+3. Deploy, then open `https://<your-service>.onrender.com/api/health`. It should return `{"status":"ok"}`.
+
+> `render.yaml` uses a paid instance type because the free type has no persistent disk: every
+> restart would wipe enrolled faces and the keyring.
+
+**2 · Frontend on Vercel**
+1. Vercel → **Add New → Project** → import this repo, and set **Root Directory** to `frontend`.
+   Everything else comes from [`frontend/vercel.json`](frontend/vercel.json).
+2. If your Render URL isn't `https://facevault-api.onrender.com`, change the `rewrites` destination
+   in `frontend/vercel.json` and push.
+3. Deploy. The footer status should read **Online**.
+
+| File | Role |
+|---|---|
+| `render.yaml` | Render Blueprint: gunicorn with 1 worker, persistent disk, env vars, health check |
+| `backend/wsgi.py` | Production entry point (`gunicorn wsgi:app`) |
+| `frontend/vercel.json` | Vite build, `/api` forwarding to Render, security headers, asset caching |
+| `BFE_TRUSTED_PROXIES` | Set to `2` on Render (Vercel → Render), so rate limits and HTTPS see the real client |
+
+---
+
 ## `// configuration`
 
 All credentials and settings live in a **`.env`** file in the project root, which is read
@@ -243,6 +281,7 @@ Then fill in your own values. Real environment variables, if set, take priority 
 | `BFE_MATCH_THRESHOLD` | `0.5` | Max face distance for a match (lower = stricter) |
 | `BFE_JWT_TTL_MINUTES` | `30` | Session lifetime |
 | `BFE_DATA_DIR` | `backend/instance` | Where the database and keyring live |
+| `BFE_TRUSTED_PROXIES` | `0` | Reverse-proxy hops to trust for client IP and HTTPS (`2` behind Vercel → Render) |
 
 > **Changing the passphrase later?** Run `python change_passphrase.py` in `backend/` first. It
 > re-encrypts the keyring under the new passphrase (keeping a backup), then you update `.env`.
@@ -305,6 +344,7 @@ Then fill in your own values. Real environment variables, if set, take priority 
 biometric-face-encryption/
 ├── start.bat                    one-command install + build + run (Windows)
 ├── .env.example                 credentials template (copy to .env, which is git-ignored)
+├── render.yaml                  Render Blueprint for the backend
 ├── backend/                     Python · Flask · cryptography
 │   ├── app.py                   REST API, routes, TLS bootstrap
 │   ├── crypto_engine.py         keyring, envelope + transport encryption, blind index, audit MAC
@@ -313,9 +353,11 @@ biometric-face-encryption/
 │   ├── config.py                settings (all overridable by environment variables)
 │   ├── reset_admin.py           reset the super-admin password
 │   ├── change_passphrase.py     re-encrypt the keyring under a new passphrase
-│   └── tests/test_security.py   24 security tests
+│   ├── wsgi.py                  production entry point (gunicorn)
+│   └── tests/test_security.py   27 security tests
 └── frontend/                    TypeScript · Tailwind CSS 4 · Vite
     ├── index.html               page structure
+    ├── vercel.json              Vercel build, /api forwarding, security headers
     ├── scripts/copy-models.mjs  copies face models from node_modules (works offline)
     └── src/
         ├── main.ts              entry point and wiring
@@ -359,11 +401,12 @@ cd backend
 python -m unittest discover -v tests
 ```
 
-**24 tests** cover: encrypt/decrypt round-trip · randomised ciphertext · bit-flip detection ·
+**27 tests** cover: encrypt/decrypt round-trip · randomised ciphertext · bit-flip detection ·
 row-swap detection · key rotation and crypto-shredding · wrong keyring passphrase · blind index ·
 transport replay, stale and tampered envelopes · audit-chain tampering · login lockout · super-admin
 only sign-in · disabled account creation · public verify vs. protected enroll · token revocation ·
-full enroll → verify → identify → rotate flow · *no plaintext in the database file*.
+full enroll → verify → identify → rotate flow · *no plaintext in the database file* · proxy
+headers (real client IP + HTTPS behind Vercel/Render, spoofing ignored locally) · production entry point.
 
 ---
 

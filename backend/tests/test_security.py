@@ -286,5 +286,54 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(r.status_code, 400)
 
 
+class DeploymentTests(unittest.TestCase):
+    """Behaviour behind Vercel -> Render (two reverse proxies)."""
+
+    def setUp(self):
+        import config
+        self.config = config
+        self.saved = config.TRUSTED_PROXIES
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.config.TRUSTED_PROXIES = self.saved
+        self.tmp.cleanup()
+
+    def _client(self, proxies):
+        self.config.TRUSTED_PROXIES = proxies
+        app = create_app(Path(self.tmp.name), "deploy-test-pass", ADMIN_PW)
+        return app, app.test_client()
+
+    def _last_login_ip(self, app):
+        return app.extensions["bfe"].db.audit_entries(1)[0]["ip"]
+
+    def test_proxy_headers_give_real_client_ip_and_https(self):
+        app, client = self._client(2)
+        headers = {"X-Forwarded-For": "203.0.113.7, 76.76.21.1", "X-Forwarded-Proto": "https"}
+        r = client.get("/api/health", headers=headers)
+        self.assertTrue(r.get_json()["tls"])
+        self.assertIn("Strict-Transport-Security", r.headers)
+        client.post("/api/auth/login", json={"username": SUPER, "password": "wrong"}, headers=headers)
+        self.assertEqual(self._last_login_ip(app), "203.0.113.7")
+
+    def test_proxy_headers_ignored_when_not_behind_proxy(self):
+        app, client = self._client(0)
+        client.post("/api/auth/login", json={"username": SUPER, "password": "wrong"},
+                    headers={"X-Forwarded-For": "6.6.6.6"})
+        self.assertEqual(self._last_login_ip(app), "127.0.0.1")  # spoofed header has no effect
+
+    def test_wsgi_entry_point_and_api_only_root(self):
+        import importlib, os
+        os.environ["BFE_DATA_DIR"] = self.tmp.name
+        try:
+            import config
+            importlib.reload(config)
+            wsgi = importlib.import_module("wsgi")
+            self.assertEqual(wsgi.app.test_client().get("/api/health").status_code, 200)
+        finally:
+            del os.environ["BFE_DATA_DIR"]
+            importlib.reload(config)
+
+
 if __name__ == "__main__":
     unittest.main()
