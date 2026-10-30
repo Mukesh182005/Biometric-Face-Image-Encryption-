@@ -22,7 +22,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import config
-from crypto_engine import (CryptoError, KeyManager, TemplateCipher, TransportCipher,
+from crypto_engine import (CryptoError, DbBlob, FileBlob, KeyManager, TemplateCipher, TransportCipher,
                            blind_index, euclidean_distance, validate_descriptor)
 from database import Database
 from security import (RateLimiter, TokenService, apply_security_headers, client_ip, rate_limit,
@@ -54,9 +54,26 @@ def mask_email(email: str) -> str:
     return (local[0] + "***" if local else "***") + "@" + domain
 
 
-def create_app(data_dir: Path | None = None, passphrase: str | None = None,
-               admin_password: str | None = None) -> Flask:
+def open_storage(data_dir: Path | None = None, passphrase: str | None = None,
+                 database_url: str | None = None) -> tuple[KeyManager, Database]:
+    """
+    Unlock the keyring and open the database.
+    DATABASE_URL set (e.g. Supabase) -> PostgreSQL, and the encrypted keyring is stored in the database
+    too, so the app needs no persistent disk. Otherwise -> SQLite + keyring.enc under data_dir.
+    """
     data_dir = Path(data_dir or config.DATA_DIR)
+    url = config.DATABASE_URL if database_url is None else database_url
+    db = Database(url or data_dir / "biometric.db")
+    store = DbBlob(db, "keyring") if db.is_postgres else FileBlob(data_dir / "keyring.enc")
+    keys = KeyManager(store, passphrase or config.MASTER_PASSPHRASE)
+    db.audit_key = keys.audit_key
+    return keys, db
+
+
+def create_app(data_dir: Path | None = None, passphrase: str | None = None,
+               admin_password: str | None = None, database_url: str | None = None) -> Flask:
+    data_dir = Path(data_dir or config.DATA_DIR)
+    master = passphrase or config.MASTER_PASSPHRASE
     app = Flask(__name__, static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = config.MAX_CONTENT_LENGTH
     app.config["SUPER_ADMIN"] = config.SUPER_ADMIN
@@ -66,15 +83,21 @@ def create_app(data_dir: Path | None = None, passphrase: str | None = None,
         # otherwise a client could spoof its IP with a fake X-Forwarded-For header.
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=config.TRUSTED_PROXIES, x_proto=1)
 
-    keys = KeyManager(data_dir / "keyring.enc", passphrase or config.MASTER_PASSPHRASE)
-    db = Database(data_dir / "biometric.db", keys.audit_key)
+    keys, db = open_storage(data_dir, master, database_url)
+    # Persist the RSA transport key (encrypted under the master passphrase) so it survives restarts.
+    stored_pem = db.get_blob("transport_key")
+    transport = TransportCipher(config.TRANSPORT_MAX_SKEW_SECONDS,
+                                stored_pem.encode() if stored_pem else None, master)
+    if transport.generated:
+        db.put_blob("transport_key", transport.export_pem(master).decode())
+    app.logger.info("Storage: %s", "PostgreSQL (schema facevault)" if db.is_postgres else f"SQLite in {data_dir}")
     svc = Services(keys=keys, db=db, templates=TemplateCipher(keys),
-                   transport=TransportCipher(config.TRANSPORT_MAX_SKEW_SECONDS),
+                   transport=transport,
                    tokens=TokenService(keys.jwt_secret, config.JWT_TTL_MINUTES),
                    limiter=RateLimiter(), threshold=config.MATCH_THRESHOLD)
     app.extensions["bfe"] = svc
 
-    if (passphrase or config.MASTER_PASSPHRASE) == config.DEV_PASSPHRASE:
+    if master == config.DEV_PASSPHRASE:
         app.logger.warning("Using the DEVELOPMENT keyring passphrase. Set BFE_MASTER_PASSPHRASE "
                            "before storing real biometric data.")
 

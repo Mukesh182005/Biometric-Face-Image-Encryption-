@@ -61,6 +61,10 @@ MIN_PASSWORD_LENGTH = 10
 # Transport envelope freshness (anti-replay)
 TRANSPORT_MAX_SKEW_SECONDS = 120
 
+# PostgreSQL connection string (e.g. Supabase). When set, the database AND the encrypted keyring live
+# there, so the server needs no persistent disk (Render free plan). Empty = local SQLite file.
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+
 # Reverse proxies in front of the app (X-Forwarded-For hops to trust). 0 = direct connections (local).
 # Vercel -> Render is 2 hops; Render alone is 1.
 TRUSTED_PROXIES = int(os.environ.get("BFE_TRUSTED_PROXIES", "0"))

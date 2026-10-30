@@ -103,9 +103,38 @@ def euclidean_distance(a: list[float], b: list[float]) -> float:
 # --------------------------------------------------------------------------- #
 #  Key management
 # --------------------------------------------------------------------------- #
+class FileBlob:
+    """Stores one text value in a file (local / single-server deployments)."""
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+
+    def read(self) -> str | None:
+        return self.path.read_text() if self.path.exists() else None
+
+    def write(self, text: str) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(text)
+        os.replace(tmp, self.path)
+
+
+class DbBlob:
+    """Stores one text value in the database's `blobs` table (hosts without a persistent disk)."""
+
+    def __init__(self, db, name: str):
+        self.db, self.name = db, name
+
+    def read(self) -> str | None:
+        return self.db.get_blob(self.name)
+
+    def write(self, text: str) -> None:
+        self.db.put_blob(self.name, text)
+
+
 class KeyManager:
     """
-    Versioned keyring persisted to disk, encrypted with a passphrase-derived key.
+    Versioned keyring, encrypted with a passphrase-derived key and persisted to a file or the database.
 
     Contents:
       kek_roots   : {version: 32 random bytes}  -> HKDF -> KEK used to wrap DEKs
@@ -117,12 +146,13 @@ class KeyManager:
 
     SCRYPT_N, SCRYPT_R, SCRYPT_P = 2**15, 8, 1
 
-    def __init__(self, path: Path, passphrase: str):
-        self.path = Path(path)
+    def __init__(self, store: Path | str | FileBlob | DbBlob, passphrase: str):
+        self.store = store if isinstance(store, (FileBlob, DbBlob)) else FileBlob(Path(store))
         self._passphrase = passphrase.encode("utf-8")
         self._lock = threading.Lock()
-        if self.path.exists():
-            self._ring = self._load()
+        raw = self.store.read()
+        if raw:
+            self._ring = self._load(raw)
         else:
             self._ring = self._new_ring()
             self._save()
@@ -143,7 +173,6 @@ class KeyManager:
         }
 
     def _save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         salt, nonce = os.urandom(16), os.urandom(12)
         key = self._derive_file_key(salt)
         ct = AESGCM(key).encrypt(nonce, json.dumps(self._ring).encode(), b"bfe-keyring")
@@ -155,12 +184,10 @@ class KeyManager:
             "nonce": b64e(nonce),
             "ciphertext": b64e(ct),
         }
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(blob, indent=2))
-        os.replace(tmp, self.path)
+        self.store.write(json.dumps(blob, indent=2))
 
-    def _load(self) -> dict:
-        blob = json.loads(self.path.read_text())
+    def _load(self, raw: str) -> dict:
+        blob = json.loads(raw)
         key = self._derive_file_key(b64d(blob["kdf"]["salt"]))
         try:
             pt = AESGCM(key).decrypt(b64d(blob["nonce"]), b64d(blob["ciphertext"]), b"bfe-keyring")
@@ -291,8 +318,24 @@ def blind_index(key: bytes, value: str) -> str:
 #  Transport encryption (client -> server hybrid RSA-OAEP + AES-GCM)
 # --------------------------------------------------------------------------- #
 class TransportCipher:
-    def __init__(self, max_skew_seconds: int = 120):
-        self._private = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    """
+    The RSA private key can be persisted (encrypted with the master passphrase) so that it survives
+    restarts: on hosts that sleep when idle, a browser that fetched the public key before the restart
+    would otherwise send envelopes the new process cannot open.
+    """
+
+    def __init__(self, max_skew_seconds: int = 120, private_key_pem: bytes | None = None,
+                 passphrase: str | None = None):
+        self._private = None
+        if private_key_pem:
+            try:
+                self._private = serialization.load_pem_private_key(
+                    private_key_pem, password=passphrase.encode() if passphrase else None)
+            except (ValueError, TypeError):
+                self._private = None  # stored under an old passphrase: replace it with a fresh key
+        self.generated = self._private is None
+        if self._private is None:
+            self._private = rsa.generate_private_key(public_exponent=65537, key_size=3072)
         self.max_skew = max_skew_seconds
         self._seen: dict[str, float] = {}
         self._lock = threading.Lock()
@@ -328,6 +371,12 @@ class TransportCipher:
             raise CryptoError("Envelope missing freshness fields")
         self._check_replay(nonce, int(ts))
         return payload
+
+    def export_pem(self, passphrase: str) -> bytes:
+        """Private key as PKCS#8 PEM, encrypted under the master passphrase."""
+        return self._private.private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+            serialization.BestAvailableEncryption(passphrase.encode()))
 
     def public_key_object(self):
         return self._private.public_key()

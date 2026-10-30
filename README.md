@@ -23,7 +23,8 @@
 ![RSA-OAEP-3072](https://img.shields.io/badge/RSA--OAEP-3072-191919?style=flat-square&labelColor=23f871)
 ![HMAC-SHA256](https://img.shields.io/badge/HMAC--SHA256-audit_chain-191919?style=flat-square&labelColor=23f871)
 ![scrypt](https://img.shields.io/badge/scrypt-keyring-191919?style=flat-square&labelColor=23f871)
-![tests](https://img.shields.io/badge/security_tests-27_passing-191919?style=flat-square&labelColor=23f871)
+![Supabase](https://img.shields.io/badge/Supabase-PostgreSQL-191919?style=flat-square&labelColor=23f871)
+![tests](https://img.shields.io/badge/security_tests-42_passing-191919?style=flat-square&labelColor=23f871)
 
 *A Cryptography & Network Security project*
 
@@ -223,41 +224,55 @@ python app.py --https     # self-signed cert → https://localhost:5443
 
 ---
 
-## `// deploy (Vercel + Render)`
+## `// deploy for free (Vercel + Render + Supabase)`
 
 ```
- Browser ──HTTPS──▶  Vercel   (frontend/dist, static)
+ Browser ──HTTPS──▶  Vercel     frontend (static)          free
                         │  /api/*  forwarded by frontend/vercel.json (same origin: no CORS)
                         ▼
-                     Render   (Flask + gunicorn, exactly 1 instance)
-                        └── persistent disk /var/data: biometric.db + keyring.enc
+                     Render     Flask + gunicorn, 1 worker  free (sleeps after 15 min idle)
+                        │  DATABASE_URL
+                        ▼
+                     Supabase   PostgreSQL, schema "facevault"   free
+                                encrypted templates · audit chain · encrypted keyring · encrypted transport key
 ```
 
-The backend can't run on Vercel: it needs a **persistent disk** (database and keyring) and **one
-long-lived process** (the transport key, replay cache and rate limits live in memory).
+Render's free plan has **no persistent disk**, so FaceVault keeps everything in Supabase. Supabase
+only ever sees ciphertext, HMACs and wrapped keys; the master passphrase that unlocks the keyring
+stays in Render's environment settings.
 
-**1 · Backend on Render**
-1. Render dashboard → **New → Blueprint** → pick this repo. It reads [`render.yaml`](render.yaml).
-2. Enter `BFE_SUPER_ADMIN` and a strong `BFE_ADMIN_PASSWORD` when asked. `BFE_MASTER_PASSPHRASE`
-   is generated for you.
+**1 · Database on Supabase**
+1. [supabase.com](https://supabase.com) → **New project**. Set a database password and pick a region
+   close to your Render region.
+2. **Connect** → copy the **Session pooler** connection string (IPv4; Render can't reach Supabase's
+   IPv6-only direct address). Put your database password in it and add `?sslmode=require`.
+
+FaceVault creates its tables itself on first start, in a private `facevault` schema with row-level
+security enabled, so they're never exposed through Supabase's public REST API.
+
+**2 · Backend on Render**
+1. Push this repo to GitHub, then Render → **New → Blueprint** → pick the repo. It reads
+   [`render.yaml`](render.yaml).
+2. Fill in `DATABASE_URL` (step 1), `BFE_SUPER_ADMIN`, and a strong `BFE_ADMIN_PASSWORD`.
+   `BFE_MASTER_PASSPHRASE` is generated for you.
 3. Deploy, then open `https://<your-service>.onrender.com/api/health`. It should return `{"status":"ok"}`.
 
-> `render.yaml` uses a paid instance type because the free type has no persistent disk: every
-> restart would wipe enrolled faces and the keyring.
+**3 · Frontend on Vercel**
+1. Vercel → **Add New → Project** → this repo, with **Root Directory** set to `frontend`.
+2. If your Render URL isn't `https://facevault-api.onrender.com`, change the `rewrites` destination in
+   [`frontend/vercel.json`](frontend/vercel.json) and push.
+3. Open the site. The footer status should read **Online**.
 
-**2 · Frontend on Vercel**
-1. Vercel → **Add New → Project** → import this repo, and set **Root Directory** to `frontend`.
-   Everything else comes from [`frontend/vercel.json`](frontend/vercel.json).
-2. If your Render URL isn't `https://facevault-api.onrender.com`, change the `rewrites` destination
-   in `frontend/vercel.json` and push.
-3. Deploy. The footer status should read **Online**.
+> **Free-tier behaviour.** Render sleeps after ~15 min without traffic, and the first request then
+> takes up to a minute while it wakes. Supabase pauses projects after about a week of inactivity
+> (resume from its dashboard; no data is lost). Open the site a few minutes before a demo.
 
 | File | Role |
 |---|---|
-| `render.yaml` | Render Blueprint: gunicorn with 1 worker, persistent disk, env vars, health check |
+| `render.yaml` | Render Blueprint: free plan, gunicorn with 1 worker, env vars, health check |
 | `backend/wsgi.py` | Production entry point (`gunicorn wsgi:app`) |
+| `backend/database.py` | SQLite locally, PostgreSQL/Supabase when `DATABASE_URL` is set |
 | `frontend/vercel.json` | Vite build, `/api` forwarding to Render, security headers, asset caching |
-| `BFE_TRUSTED_PROXIES` | Set to `2` on Render (Vercel → Render), so rate limits and HTTPS see the real client |
 
 ---
 
@@ -280,7 +295,8 @@ Then fill in your own values. Real environment variables, if set, take priority 
 | `BFE_ADMIN_PASSWORD` | random, printed once | Super-admin password; applied on every start-up, so edit `.env` and restart to change it |
 | `BFE_MATCH_THRESHOLD` | `0.5` | Max face distance for a match (lower = stricter) |
 | `BFE_JWT_TTL_MINUTES` | `30` | Session lifetime |
-| `BFE_DATA_DIR` | `backend/instance` | Where the database and keyring live |
+| `DATABASE_URL` | empty (local SQLite) | PostgreSQL / Supabase connection string; database **and** encrypted keyring are stored there |
+| `BFE_DATA_DIR` | `backend/instance` | Where the local SQLite database and keyring live |
 | `BFE_TRUSTED_PROXIES` | `0` | Reverse-proxy hops to trust for client IP and HTTPS (`2` behind Vercel → Render) |
 
 > **Changing the passphrase later?** Run `python change_passphrase.py` in `backend/` first. It
@@ -348,13 +364,13 @@ biometric-face-encryption/
 ├── backend/                     Python · Flask · cryptography
 │   ├── app.py                   REST API, routes, TLS bootstrap
 │   ├── crypto_engine.py         keyring, envelope + transport encryption, blind index, audit MAC
-│   ├── database.py              SQLite schema, queries, HMAC audit chain
+│   ├── database.py              SQLite or PostgreSQL (Supabase): schema, queries, HMAC audit chain
 │   ├── security.py              JWT, super-admin guard, rate limiting, security headers
 │   ├── config.py                settings (all overridable by environment variables)
 │   ├── reset_admin.py           reset the super-admin password
 │   ├── change_passphrase.py     re-encrypt the keyring under a new passphrase
 │   ├── wsgi.py                  production entry point (gunicorn)
-│   └── tests/test_security.py   27 security tests
+│   └── tests/test_security.py   42 security tests (SQLite + PostgreSQL)
 └── frontend/                    TypeScript · Tailwind CSS 4 · Vite
     ├── index.html               page structure
     ├── vercel.json              Vercel build, /api forwarding, security headers
@@ -399,9 +415,12 @@ biometric-face-encryption/
 ```bash
 cd backend
 python -m unittest discover -v tests
+
+# also run the API suite against PostgreSQL:
+FACEVAULT_TEST_PG_URL=postgresql://user@localhost:5432/postgres python -m unittest discover tests
 ```
 
-**27 tests** cover: encrypt/decrypt round-trip · randomised ciphertext · bit-flip detection ·
+**42 tests** (the API suite runs on both SQLite and PostgreSQL) cover: encrypt/decrypt round-trip · randomised ciphertext · bit-flip detection ·
 row-swap detection · key rotation and crypto-shredding · wrong keyring passphrase · blind index ·
 transport replay, stale and tampered envelopes · audit-chain tampering · login lockout · super-admin
 only sign-in · disabled account creation · public verify vs. protected enroll · token revocation ·

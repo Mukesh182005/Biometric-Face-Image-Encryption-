@@ -164,6 +164,16 @@ class ApiTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    # storage hooks, overridden by PostgresApiTests
+    def raw_storage_bytes(self) -> bytes:
+        return (Path(self.tmp.name) / "biometric.db").read_bytes()
+
+    def corrupt_all_pii(self) -> None:
+        conn = sqlite3.connect(Path(self.tmp.name) / "biometric.db")
+        conn.execute("UPDATE subjects SET pii_ct = zeroblob(length(pii_ct))")
+        conn.commit()
+        conn.close()
+
     def env(self, payload):
         return client_envelope(self.svc.transport, payload)
 
@@ -239,7 +249,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.enroll(h, "Evil", "evil@example.com", alice, 90).status_code, 409)
 
         # database file contains no plaintext
-        raw = (Path(self.tmp.name) / "biometric.db").read_bytes()
+        raw = self.raw_storage_bytes()
         self.assertNotIn(b"alice@example.com", raw)
         self.assertNotIn(b"Alice", raw)
 
@@ -269,10 +279,7 @@ class ApiTests(unittest.TestCase):
     def test_tampered_row_flagged(self):
         h = self.auth()
         self.enroll(h, "Carol", "carol@example.com", rand_vec(40))
-        conn = sqlite3.connect(Path(self.tmp.name) / "biometric.db")
-        conn.execute("UPDATE subjects SET pii_ct = zeroblob(length(pii_ct))")
-        conn.commit()
-        conn.close()
+        self.corrupt_all_pii()
         subs = self.client.get("/api/subjects", headers=h).get_json()
         self.assertEqual(subs[0]["integrity"], "failed")
 
@@ -284,6 +291,71 @@ class ApiTests(unittest.TestCase):
     def test_plain_descriptor_without_envelope_rejected(self):
         r = self.client.post("/api/verify", json={"email": "x@y.io", "descriptor": [0.0] * 128})
         self.assertEqual(r.status_code, 400)
+
+
+# Run the whole API suite against PostgreSQL too (the Supabase code path), e.g.
+#   FACEVAULT_TEST_PG_URL=postgresql://user@127.0.0.1:5432/postgres python -m unittest discover tests
+PG_URL = os.environ.get("FACEVAULT_TEST_PG_URL")
+
+
+@unittest.skipUnless(PG_URL, "set FACEVAULT_TEST_PG_URL to run the API tests against PostgreSQL")
+class PostgresApiTests(ApiTests):
+    """Every ApiTests test, with the database and keyring in PostgreSQL (one throwaway database each)."""
+
+    def setUp(self):
+        import uuid
+        import psycopg
+        self.dbname = f"fv_test_{uuid.uuid4().hex[:12]}"
+        with psycopg.connect(PG_URL, autocommit=True) as admin:
+            admin.execute(f"CREATE DATABASE {self.dbname}")
+        self.url = PG_URL.rsplit("/", 1)[0] + "/" + self.dbname
+        self.tmp = tempfile.TemporaryDirectory()
+        self.app = create_app(Path(self.tmp.name), "api-test-pass", ADMIN_PW, database_url=self.url)
+        self.client = self.app.test_client()
+        self.svc = self.app.extensions["bfe"]
+
+    def tearDown(self):
+        import psycopg
+        self.svc.db.close()
+        with psycopg.connect(PG_URL, autocommit=True) as admin:
+            admin.execute(f"DROP DATABASE IF EXISTS {self.dbname} WITH (FORCE)")
+        self.tmp.cleanup()
+
+    def _sql(self, sql):
+        import psycopg
+        with psycopg.connect(self.url, autocommit=True) as c:
+            return c.execute(sql).fetchall() if sql.lstrip().upper().startswith("SELECT") else c.execute(sql)
+
+    def raw_storage_bytes(self) -> bytes:
+        rows = []
+        for table in ("operators", "subjects", "audit_log", "blobs"):
+            rows += self._sql(f"SELECT * FROM facevault.{table}")
+        return repr(rows).encode()
+
+    def corrupt_all_pii(self) -> None:
+        self._sql("UPDATE facevault.subjects SET pii_ct = decode(repeat('00', length(pii_ct)), 'hex')")
+
+    def test_nothing_on_disk_and_keys_survive_restart(self):
+        """Render free plan: the disk is wiped, so everything must come back from the database."""
+        h = self.auth()
+        self.assertEqual(self.enroll(h, "Dana", "dana@example.com", rand_vec(70)).status_code, 201)
+        fingerprint = self.client.get("/api/crypto/public-key").get_json()["fingerprint"]
+        self.svc.db.close()
+        self.tmp.cleanup()  # simulate the ephemeral disk being wiped
+        self.tmp = tempfile.TemporaryDirectory()
+        self.assertEqual(list(Path(self.tmp.name).iterdir()), [])
+        app2 = create_app(Path(self.tmp.name), "api-test-pass", ADMIN_PW, database_url=self.url)
+        self.svc, self.client = app2.extensions["bfe"], app2.test_client()
+        self.assertEqual(self.client.get("/api/crypto/public-key").get_json()["fingerprint"], fingerprint)
+        self.assertEqual(list(Path(self.tmp.name).iterdir()), [])  # still nothing written to disk
+        subjects = self.client.get("/api/subjects", headers=self.auth()).get_json()
+        self.assertEqual([(s["name"], s["integrity"]) for s in subjects], [("Dana", "ok")])
+        self.assertTrue(self.client.get("/api/audit/verify", headers=self.auth()).get_json()["valid"])
+
+    def test_tables_are_in_private_schema_with_rls(self):
+        rows = self._sql("SELECT tablename, rowsecurity FROM pg_tables WHERE schemaname = 'facevault' ORDER BY 1")
+        self.assertEqual(rows, [("audit_log", True), ("blobs", True), ("operators", True), ("subjects", True)])
+        self.assertEqual(self._sql("SELECT count(*) FROM pg_tables WHERE schemaname = 'public'"), [(0,)])
 
 
 class DeploymentTests(unittest.TestCase):
@@ -321,6 +393,12 @@ class DeploymentTests(unittest.TestCase):
         client.post("/api/auth/login", json={"username": SUPER, "password": "wrong"},
                     headers={"X-Forwarded-For": "6.6.6.6"})
         self.assertEqual(self._last_login_ip(app), "127.0.0.1")  # spoofed header has no effect
+
+    def test_transport_key_survives_restart_sqlite(self):
+        _, c1 = self._client(0)
+        fp1 = c1.get("/api/crypto/public-key").get_json()["fingerprint"]
+        _, c2 = self._client(0)
+        self.assertEqual(c2.get("/api/crypto/public-key").get_json()["fingerprint"], fp1)
 
     def test_wsgi_entry_point_and_api_only_root(self):
         import importlib, os
