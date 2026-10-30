@@ -1,0 +1,29 @@
+{
+  "name": "facevault-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "models": "node scripts/copy-models.mjs",
+    "predev": "npm run models",
+    "dev": "vite",
+    "dev:full": "concurrently -k -n api,web -c green,cyan \"python ../backend/app.py --no-browser\" \"vite\"",
+    "prebuild": "npm run models",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@fontsource-variable/archivo": "^5.3.0",
+    "@fontsource/instrument-serif": "^5.3.0",
+    "@fontsource/space-mono": "^5.3.0",
+    "@vladmandic/face-api": "^1.7.15"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "concurrently": "^10.0.6",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  }
+}
