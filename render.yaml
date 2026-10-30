@@ -6,7 +6,7 @@
 # matters is written to the server's disk.
 #
 # The frontend is on Vercel (frontend/vercel.json forwards /api/* here). If Render gives this service a
-# different URL than https://facevault-api.onrender.com, update the rewrite in frontend/vercel.json.
+# different URL than https://biometric-face-image-encryption.onrender.com, update the rewrite in frontend/vercel.json.
 services:
   - type: web
     name: facevault-api
