@@ -37,7 +37,6 @@ function init(): void {
 
   document.querySelectorAll<HTMLElement>("#nav [data-view], [data-goto]").forEach((b) =>
     b.addEventListener("click", () => show((b.dataset.view ?? b.dataset.goto) as View)));
-  $("[data-home]").addEventListener("click", () => show("dashboard"));
 
   on("#login-form", "submit", (e) => login(e as SubmitEvent));
   on("#enroll-form", "submit", (e) => enroll(e as SubmitEvent));
