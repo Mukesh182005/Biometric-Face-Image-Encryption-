@@ -71,8 +71,12 @@
     </nav>
   </header>
 
-  <div id="server-warning" hidden class="border-b-2 border-(--hard) bg-[#ff4d3d] px-4 py-3 text-center text-[0.875rem] font-semibold text-[#191919] [&_code]:text-[#191919]">
-    The FaceVault API is not reachable. Start the backend with <code>start.bat</code> (or <code>npm run dev:full</code> in <code>frontend/</code>), then reload.
+  <div id="server-waking" hidden class="border-b-2 border-(--hard) bg-[#ffb020] px-4 py-3 text-center text-[0.875rem] font-semibold text-[#191919]" role="status">
+    <span class="inline-block animate-pulse">●</span> Waking up the backend… The free server sleeps when idle and can take up to a minute to start. This page will connect by itself.
+  </div>
+  <div id="server-warning" hidden class="border-b-2 border-(--hard) bg-[#ff4d3d] px-4 py-3 text-center text-[0.875rem] font-semibold text-[#191919] [&_code]:text-[#191919]" role="alert">
+    <span id="server-warning-text">The FaceVault API is not reachable.</span>
+    <button id="server-retry" class="ml-2 cursor-pointer underline decoration-2 underline-offset-4">Try again</button>
   </div>
 
   <!-- ============================================================ main -->

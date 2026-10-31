@@ -19,6 +19,8 @@ function on<K extends keyof HTMLElementEventMap>(selector: string, type: K, hand
   $(selector).addEventListener(type, (ev) => void handler(ev as HTMLElementEventMap[K]));
 }
 
+const LOCAL = ["localhost", "127.0.0.1"].includes(location.hostname);
+
 function setOnline(online: boolean): void {
   const status = $("#status-online");
   status.replaceChildren();
@@ -28,6 +30,39 @@ function setOnline(online: boolean): void {
   status.classList.toggle("text-acid", online);
   status.classList.toggle("text-[#ff4d3d]", !online);
   $("#server-warning").hidden = online;
+  $("#server-waking").hidden = true;
+  $("#server-warning-text").textContent = LOCAL
+    ? "The FaceVault backend is not running. Start it with start.bat, then reload."
+    : "The FaceVault backend did not respond. It may be restarting.";
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Connect to the API, retrying while it starts up. Render's free plan sleeps after 15 idle minutes and
+ * the first request can take up to a minute, so a single failed check must not be reported as "down".
+ */
+async function connect(): Promise<void> {
+  const deadline = Date.now() + (LOCAL ? 6_000 : 100_000);
+  const waking = window.setTimeout(() => { $("#server-waking").hidden = false; }, 2500);
+  try {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const h = await api<{ status: string }>("/api/health");
+        if (h.status === "ok") break;
+      } catch {
+        if (Date.now() > deadline) throw new Error("backend unreachable");
+        await sleep(Math.min(8000, 1500 * (attempt + 1)));
+      }
+    }
+    clearTimeout(waking);
+    setOnline(true);
+    await getServerKey();
+    $("#foot-fp").textContent = `transport key · ${serverFingerprint?.slice(0, 24)}…`;
+  } catch {
+    clearTimeout(waking);
+    setOnline(false);
+  }
 }
 
 function init(): void {
@@ -58,8 +93,7 @@ function init(): void {
   });
 
   const tls = $("#badge-tls");
-  const local = ["localhost", "127.0.0.1"].includes(location.hostname);
-  tls.textContent = location.protocol === "https:" ? "tls on" : local ? "tls off · localhost" : "tls off";
+  tls.textContent = location.protocol === "https:" ? "tls on" : LOCAL ? "tls off · localhost" : "tls off";
   tls.className = `badge ${location.protocol === "https:" ? "badge-good" : "badge-warn"} hidden md:inline-flex`;
   if (!window.isSecureContext) toast("Not a secure context: camera and WebCrypto need https:// or localhost", true);
 
@@ -67,11 +101,11 @@ function init(): void {
   show("verify");
   void loadModels();
 
-  api<{ status: string }>("/api/health")
-    .then((h) => setOnline(h.status === "ok"))
-    .then(getServerKey)
-    .then(() => ($("#foot-fp").textContent = `transport key · ${serverFingerprint?.slice(0, 24)}…`))
-    .catch(() => setOnline(false));
+  on("#server-retry", "click", () => {
+    $("#server-warning").hidden = true;
+    return connect();
+  });
+  void connect();
 }
 
 document.addEventListener("DOMContentLoaded", init);
