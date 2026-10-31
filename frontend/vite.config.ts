@@ -15,5 +15,12 @@ export default defineConfig({
     emptyOutDir: true,
     target: "es2022",
     chunkSizeWarningLimit: 2500, // face-api bundles TensorFlow.js (~1.3 MB)
+    // Two pages: the landing page (/) and the application (/app.html).
+    rollupOptions: {
+      input: {
+        landing: "index.html",
+        app: "app.html",
+      },
+    },
   },
 });

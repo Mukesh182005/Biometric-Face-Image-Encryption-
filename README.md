@@ -372,11 +372,13 @@ biometric-face-encryption/
 │   ├── wsgi.py                  production entry point (gunicorn)
 │   └── tests/test_security.py   42 security tests (SQLite + PostgreSQL)
 └── frontend/                    TypeScript · Tailwind CSS 4 · Vite
-    ├── index.html               page structure
+    ├── index.html               landing page (/): animated face → ciphertext hero, live AES-GCM demo
+    ├── app.html                 the application (/app.html)
     ├── vercel.json              Vercel build, /api forwarding, security headers
     ├── scripts/copy-models.mjs  copies face models from node_modules (works offline)
     └── src/
-        ├── main.ts              entry point and wiring
+        ├── main.ts              app entry point and wiring
+        ├── landing.ts           landing page animations and live crypto demo
         ├── views.ts             one loader / action per screen
         ├── face.ts              detection cascade, light correction, digital zoom
         ├── crypto.ts            WebCrypto RSA-OAEP + AES-GCM transport encryption

@@ -178,6 +178,10 @@ def create_app(data_dir: Path | None = None, passphrase: str | None = None,
                            hint="Locally: run start.bat, or `npm run build` in frontend/.")
         return send_from_directory(config.FRONTEND_DIR, "index.html")
 
+    @app.get("/app")
+    def app_page():
+        return send_from_directory(config.FRONTEND_DIR, "app.html")
+
     @app.get("/<path:filename>")
     def static_files(filename):
         # Vite build output: hashed bundles in assets/, face models in models/, favicon.
